@@ -7,11 +7,11 @@ namespace example
 {
     class Program
     {
-        static int count = 0;   /*  todo::thread safe  */
+        static int count = 0;
 
         private static async Task handleAddersBook(Session session, AddressBook ab)
         {
-            count++;
+            Interlocked.Increment(ref count);
             /*  echo    */
             await session.sendProtobuf(ab, 1);
         }
@@ -22,7 +22,10 @@ namespace example
             /*  注册消息处理函数    */
             service.register<AddressBook>(handleAddersBook, 1);
             /*  开始监听服务  */
-            service.startListen("127.0.0.1", 20000, null);
+            service.startListen("127.0.0.1", 20000, null, (Session session) =>
+            {
+                System.Console.WriteLine("my close : {0}", session.ID);
+            });
 
             while (true)
             {

@@ -3,9 +3,9 @@ using System.Threading.Tasks;
 using Google.Protobuf.Examples.AddressBook;
 using dodo.net;
 
-namespace example
+namespace TestServer
 {
-    class Program
+    class example
     {
         static int count = 0;   /*  todo::thread safe  */
 
@@ -19,7 +19,7 @@ namespace example
             var service = new TcpService();
 
             service.register<AddressBook>(handleAddersBook, 1);
-            for (int i = 0; i < 10000; i++)
+            for (int i = 0; i < 1000; i++)
             {
                 service.startConnector("127.0.0.1", 20000, async (Session session) =>
                 {
@@ -32,7 +32,7 @@ namespace example
                     ab.People.Add(p);
 
                     await session.sendProtobuf(ab, 1);
-                });
+                }, null);
             }
 
             while (true)
