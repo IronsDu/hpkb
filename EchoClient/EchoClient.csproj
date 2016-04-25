@@ -34,7 +34,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Google.Protobuf">
-      <HintPath>..\..\..\..\..\Desktop\protobuf\csharp\src\Google.Protobuf\bin\Release\Google.Protobuf.dll</HintPath>
+      <HintPath>..\packages\Google.Protobuf.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
