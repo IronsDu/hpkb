@@ -11,25 +11,31 @@ namespace dodo
 {
     namespace net
     {
-        /*  TODO:: add waitClose    */
+        /*  TODO::添加关闭服务的接口 */
         public class TcpService
         {
-            private Dictionary<int, Func<Session, byte[], Task>> mHandlers = new Dictionary<int, Func<Session, byte[], Task>>();
-            private Dictionary<Int64, Session> mSessions = new Dictionary<Int64, Session>();
+            private Dictionary<string, Func<Session, byte[], Task>> mHandlers = new Dictionary<string, Func<Session, byte[], Task>>();
+            private Dictionary<long, Session> mSessions = new Dictionary<long, Session>();
             private ReaderWriterLockSlim mSessionsLock = new ReaderWriterLockSlim();
-            private Int32 mNextID = 0;
+            private int mNextID = 0;
+            private List<TcpListener> mListeners = new List<TcpListener>();
+            private List<Task> mListenerTasks = new List<Task>();
+            private ReaderWriterLockSlim mListenersLock = new ReaderWriterLockSlim();
 
-            public async Task processPacket(Session session, byte[] netMsgData, int msgID)
+            public async Task processPacket(Session session, byte[] netMsgData, string msgTypeName)
             {
-                await mHandlers[msgID](session, netMsgData);
+                Func<Session, byte[], Task> handle = null;
+                if(mHandlers.TryGetValue(msgTypeName, out handle))
+                {
+                    await handle(session, netMsgData);
+                }
             }
 
-            /*  TODO:: msgid    */
-            public void register<T>(Func<Session, T, Task> callback, int msgID) where T : Google.Protobuf.IMessage<T>
+            public void register<T>(Func<Session, T, Task> callback) where T : Google.Protobuf.IMessage<T>
             {
                 var descriptorProperty = typeof(T).GetProperty("Descriptor");
                 MessageDescriptor descriptor = descriptorProperty.GetValue(null) as MessageDescriptor;
-                mHandlers.Add(msgID, async (Session session, byte[] netMsgData) =>
+                mHandlers.Add(descriptor.FullName, async (Session session, byte[] netMsgData) =>
                 {
                     IMessage message = descriptor.Parser.ParseFrom(netMsgData);
                     if(message is T)
@@ -38,12 +44,12 @@ namespace dodo
                     }
                     else
                     {
-                        System.Console.WriteLine("pb message error, {0} -> {1}", message.Descriptor.Name, typeof(T).Name);
+                        Console.WriteLine("pb message error, {0} -> {1}", message.Descriptor.Name, typeof(T).Name);
                     }
                 });
             }
 
-            public Session findSession(Int64 id)
+            public Session findSession(long id)
             {
                 Session ret = null;
                 mSessionsLock.EnterReadLock();
@@ -68,11 +74,31 @@ namespace dodo
                 }
             }
 
+            public  void    waitCloseAll()
+            {
+                mSessionsLock.EnterWriteLock();
+                try
+                {
+                    foreach (var l in mListeners)
+                    {
+                        l.Stop();
+                    }
+                    foreach (var lt in mListenerTasks)
+                    {
+                        lt.Wait();
+                    }
+                }
+                finally
+                { }
+                mSessionsLock.ExitWriteLock();
+            }
+
             public void startConnector(string ip, int port, Action<Session> enterCallback, Action<Session> disconnectCallback)
             {
+                /*  TODO    */
                 Task.Run(async () =>
                 {
-                    System.Console.WriteLine("connect {0}:{1}", ip, port);
+                    Console.WriteLine("connect {0}:{1}", ip, port);
                     TcpClient c = new TcpClient();
                     await c.ConnectAsync(IPAddress.Parse(ip), port);
                     newSessionTask(c, enterCallback, disconnectCallback);
@@ -81,19 +107,38 @@ namespace dodo
 
             public void startListen(string ip, int port, Action<Session> enterCallback, Action<Session> disconnectCallback)
             {
-                Task.Run(async () =>
+                Console.WriteLine("listen {0}:{1}", ip, port);
+                var server = new TcpListener(IPAddress.Parse(ip), port);
+                server.Start();
+
+                /*  添加到listen管理器，用于关闭服务时用   */
+                mListenersLock.EnterWriteLock();
+                mListeners.Add(server);
+
+                mListenerTasks.Add(Task.Run(async () =>
                 {
-                    System.Console.WriteLine("listen {0}:{1}", ip, port);
-                    var server = new TcpListener(IPAddress.Parse(ip), port);
-                    server.Start();
-                    while (true)
+                    try
                     {
-                        newSessionTask(await server.AcceptTcpClientAsync(), enterCallback, disconnectCallback);
+                        while (true)
+                        {
+                            var client = await server.AcceptTcpClientAsync();
+                            if(client != null)
+                            {
+                                newSessionTask(client, enterCallback, disconnectCallback);
+                            }
+                            else
+                            {
+                                break;
+                            }
+                        }
                     }
-                });
+                    finally
+                    { }
+                }));
+                mListenersLock.ExitWriteLock();
             }
 
-            public static Int32 DateTimeToUnixTimestamp(DateTime dateTime)
+            public static int DateTimeToUnixTimestamp(DateTime dateTime)
             {
                 var start = new DateTime(1970, 1, 1, 0, 0, 0, dateTime.Kind);
                 return Convert.ToInt32((dateTime - start).TotalSeconds);
@@ -104,13 +149,14 @@ namespace dodo
                 Session session = null;
                 mSessionsLock.EnterWriteLock();
                 mNextID++;
-                Int64 id = (Int64)mNextID << 32;
-                id |= (Int64)DateTimeToUnixTimestamp(DateTime.Now);
+                long id = (long)mNextID << 32;
+                id |= (long)DateTimeToUnixTimestamp(DateTime.Now);
                 session = new Session(this, client, id);
                 mSessions[id] = session;
                 mSessionsLock.ExitWriteLock();
 
                 session.DisCallback = disconnectCallback;
+                /*  开启会话的读写"线程" */
                 session.run();
 
                 if (enterCallback != null)

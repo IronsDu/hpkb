@@ -4,11 +4,14 @@ using Google.Protobuf;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading.Tasks.Dataflow;
+using System.Text;
+using System.Threading;
 
 namespace dodo
 {
     namespace net
     {
+        /*  TODO::完善异常处理，完善主动断开，添加等待完成结束的接口   */
         public class Session
         {
             public class SendMsg
@@ -32,9 +35,10 @@ namespace dodo
             private Action<Session>         mDisConnectCallback = null;
             private Task                    mSendTask = null;
             private Task                    mRecvTask = null;
-            private Int64                   mID = -1;
+            private long                    mID = -1;
+            private CancellationTokenSource mCalcelRead = new CancellationTokenSource();
 
-            public Session(TcpService service, TcpClient client, Int64 id)
+            public Session(TcpService service, TcpClient client, long id)
             {
                 mClient = client;
                 mService = service;
@@ -43,7 +47,7 @@ namespace dodo
                 mEndPoint = mClient.Client.RemoteEndPoint;
             }
 
-            public Int64 ID
+            public long ID
             {
                 set { mID = value;  }
                 get { return mID; }
@@ -69,18 +73,20 @@ namespace dodo
 
             ~Session()
             {
-                mClient.Close();
+                mClient?.Close();
+                mSendTask?.Dispose();
+                mRecvTask?.Dispose();
             }
 
             public void wait()
             {
-                if(mSendTask != null)
-                {
-                    mSendTask.Wait();
-                }
-                if(mRecvTask != null)
+                if (mRecvTask != null)
                 {
                     mRecvTask.Wait();
+                }
+                if (mSendTask != null)
+                {
+                    mSendTask.Wait();
                 }
             }
 
@@ -96,7 +102,8 @@ namespace dodo
 
             public void close()
             {
-                mClient.Close();
+                mCalcelRead.Cancel();
+                mSendList.Post(null);
             }
 
             public async Task Send(byte[] data)
@@ -105,21 +112,26 @@ namespace dodo
                 await mSendList.SendAsync(msg);
             }
 
-            public async Task sendProtobuf(IMessage pbMsg, Int32 msgID)
+            public async Task sendProtobuf(IMessage pbMsg)
             {
-                /*  packet: [pbLen - msgID - pbData] */
+                /*  packet: [(int)pbLen - (int)msgTypeNamelen - byte msgTypeName[msgTypeNamelen] - byte pbData[pbLen] */
 
                 var pbBytes = pbMsg.ToByteArray();
-                var msgData = new byte[sizeof(Int32) + sizeof(Int32) + pbBytes.Length];
-                var pbLenBytes = BitConverter.GetBytes((Int32)pbBytes.Length);
-                var msgIDBytes = BitConverter.GetBytes(msgID);
+                var descriptor = pbMsg.Descriptor;
+                var msgTypeName = descriptor.FullName;
+                byte[] msgTypeNameBytes = Encoding.UTF8.GetBytes(msgTypeName);
+
+                var msgData = new byte[sizeof(int) + sizeof(int) + msgTypeNameBytes.Length + pbBytes.Length];
+                var pbLenBytes = BitConverter.GetBytes((int)pbBytes.Length);
+                var msgTypeNameLenBytes = BitConverter.GetBytes(msgTypeNameBytes.Length);
 
                 int pos = 0;
-                pbLenBytes.CopyTo(msgData, pos); pos += sizeof(Int32);
-                msgIDBytes.CopyTo(msgData, pos); pos += sizeof(Int32);
-                pbBytes.CopyTo(msgData, pos);
+                pbLenBytes.CopyTo(msgData, pos); pos += sizeof(int);
+                msgTypeNameLenBytes.CopyTo(msgData, pos); pos += sizeof(int);
+                msgTypeNameBytes.CopyTo(msgData, pos); pos += msgTypeNameBytes.Length;
+                pbBytes.CopyTo(msgData, pos); pos += pbBytes.Length;
 
-                await Send(msgData);
+              await Send(msgData);
             }
 
             private void sendThread()
@@ -132,8 +144,15 @@ namespace dodo
                         while (true)
                         {
                             var msg = await mSendList.ReceiveAsync();
-                            await writer.WriteAsync(msg.msgData, 0, msg.msgData.Length);
-                            await writer.FlushAsync();
+                            if(msg != null)
+                            {
+                                await writer.WriteAsync(msg.msgData, 0, msg.msgData.Length);
+                                await writer.FlushAsync();
+                            }
+                            else
+                            {
+                                break;
+                            }
                         }
                     }
                     finally
@@ -149,17 +168,39 @@ namespace dodo
                 {
                     try
                     {
-                        byte[] headBuffer = new byte[sizeof(Int32)+ sizeof(Int32)];
+                        byte[] headBuffer = new byte[sizeof(int) + sizeof(int)];
                         var stream = mClient.GetStream();
+                        var cancelToken = mCalcelRead.Token;
                         while (true)
                         {
-                            await stream.ReadAsync(headBuffer, 0, headBuffer.Length);
-                            int len = BitConverter.ToInt32(headBuffer, 0);
-                            byte[] body = new byte[len];
-                            await stream.ReadAsync(body, 0, len);
-                            int cmdID = BitConverter.ToInt32(headBuffer, sizeof(Int32));
+                            await stream.ReadAsync(headBuffer, 0, headBuffer.Length, cancelToken);
+                            if(cancelToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
 
-                            await mService.processPacket(this, body, cmdID);
+                            int pbLen = BitConverter.ToInt32(headBuffer, 0);
+                            int nameLen = BitConverter.ToInt32(headBuffer, sizeof(int));
+                            byte[] pbBody = new byte[pbLen];
+                            byte[] nameBody = new byte[nameLen];
+                            await stream.ReadAsync(nameBody, 0, nameLen, cancelToken);
+                            if (cancelToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
+                            await stream.ReadAsync(pbBody, 0, pbLen, cancelToken);
+                            if (cancelToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
+
+                            string name = Encoding.UTF8.GetString(nameBody);
+
+                            await mService.processPacket(this, pbBody, name);
+                            if (cancelToken.IsCancellationRequested)
+                            {
+                                break;
+                            }
                         }
                     }
                     finally
@@ -171,7 +212,8 @@ namespace dodo
 
             private void    onClose()
             {
-                mClient.Close();
+                Console.WriteLine("on close \n");
+                close();
                 mService.removeSession(this);
             }
         }

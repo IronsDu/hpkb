@@ -13,14 +13,14 @@ namespace example
         {
             Interlocked.Increment(ref count);
             /*  echo    */
-            await session.sendProtobuf(ab, 1);
+            await session.sendProtobuf(ab);
         }
 
         private static void Main(string[] args)
         {
             var service = new TcpService();
             /*  注册消息处理函数    */
-            service.register<AddressBook>(handleAddersBook, 1);
+            service.register<AddressBook>(handleAddersBook);
             /*  开始监听服务  */
             service.startListen("127.0.0.1", 20000, null, (Session session) =>
             {

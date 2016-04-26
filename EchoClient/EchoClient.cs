@@ -7,19 +7,20 @@ namespace TestServer
 {
     class example
     {
-        static int count = 0;   /*  todo::thread safe  */
+        static int count = 0;
 
         private static async Task handleAddersBook(Session session, AddressBook ab)
         {
-            await session.sendProtobuf(ab, 1);  /*  echo    */
+            Interlocked.Increment(ref count);
+            await session.sendProtobuf(ab);  /*  echo    */
         }
 
         private static void Main(string[] args)
         {
             var service = new TcpService();
 
-            service.register<AddressBook>(handleAddersBook, 1);
-            for (int i = 0; i < 1000; i++)
+            service.register<AddressBook>(handleAddersBook);
+            for (int i = 0; i < 5000; i++)
             {
                 service.startConnector("127.0.0.1", 20000, async (Session session) =>
                 {
@@ -31,7 +32,7 @@ namespace TestServer
                     p.Name = "dodo";
                     ab.People.Add(p);
 
-                    await session.sendProtobuf(ab, 1);
+                    await session.sendProtobuf(ab);
                 }, null);
             }
 

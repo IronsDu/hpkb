@@ -1,1 +1,0 @@
-C:\Users\ss\Documents\Visual Studio 2015\Projects\hpkb\EchoServer\bin\Release\EchoServer.exe.config
