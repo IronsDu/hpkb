@@ -77,25 +77,35 @@ namespace dodo
             public  void    waitCloseAll()
             {
                 mSessionsLock.EnterWriteLock();
-                try
+
+                foreach (var listener in mListeners)
                 {
-                    foreach (var l in mListeners)
-                    {
-                        l.Stop();
-                    }
-                    foreach (var lt in mListenerTasks)
-                    {
-                        lt.Wait();
-                    }
+                    listener.Stop();
                 }
-                finally
-                { }
+
+                foreach (var listenerTask in mListenerTasks)
+                {
+                    try
+                    {
+                        listenerTask.Wait();
+                    }
+                    catch (AggregateException)
+                    { }
+                }
+
+                foreach (var session in mSessions)
+                {
+                    session.Value.close();
+                    session.Value.wait();
+                }
+
+                mSessions.Clear();
                 mSessionsLock.ExitWriteLock();
             }
 
             public void startConnector(string ip, int port, Action<Session> enterCallback, Action<Session> disconnectCallback)
             {
-                /*  TODO    */
+                /*  TODO,链接超时，以及主动取消链接。以及正在关闭服务的时候，处理正链接成功构造sessin的问题    */
                 Task.Run(async () =>
                 {
                     Console.WriteLine("connect {0}:{1}", ip, port);
@@ -117,23 +127,18 @@ namespace dodo
 
                 mListenerTasks.Add(Task.Run(async () =>
                 {
-                    try
+                    while (true)
                     {
-                        while (true)
+                        var client = await server.AcceptTcpClientAsync();
+                        if (client != null)
                         {
-                            var client = await server.AcceptTcpClientAsync();
-                            if(client != null)
-                            {
-                                newSessionTask(client, enterCallback, disconnectCallback);
-                            }
-                            else
-                            {
-                                break;
-                            }
+                            newSessionTask(client, enterCallback, disconnectCallback);
+                        }
+                        else
+                        {
+                            break;
                         }
                     }
-                    finally
-                    { }
                 }));
                 mListenersLock.ExitWriteLock();
             }

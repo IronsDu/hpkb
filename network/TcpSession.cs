@@ -92,16 +92,12 @@ namespace dodo
 
             public void shutdown()
             {
-                try
-                {
-                    mClient.Client.Shutdown(SocketShutdown.Both);
-                }
-                finally
-                { }
+                mClient.Client.Shutdown(SocketShutdown.Both);
             }
 
             public void close()
             {
+                mClient.Close();
                 mCalcelRead.Cancel();
                 mSendList.Post(null);
             }
@@ -168,6 +164,7 @@ namespace dodo
                 {
                     try
                     {
+                        /*  TODO::测试是否一次性read多个数据,进行自定义解包,提高速度   */
                         byte[] headBuffer = new byte[sizeof(int) + sizeof(int)];
                         var stream = mClient.GetStream();
                         var cancelToken = mCalcelRead.Token;
@@ -214,7 +211,7 @@ namespace dodo
             {
                 Console.WriteLine("on close \n");
                 close();
-                mService.removeSession(this);
+                mService.removeSession(this);   /*  可重复调用   */
             }
         }
     }
